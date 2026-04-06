@@ -9,8 +9,10 @@ from qdrant_client import QdrantClient  # 引入客户端
 from Mytools import *
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import RedisChatMessageHistory
+import os
 
 app = FastAPI()
+deep_seek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
 
 class Master():
@@ -20,7 +22,7 @@ class Master():
             temperature=0,
             streaming=True,
             base_url="https://api.deepseek.com",  # DeepSeek 需要配置
-            api_key="",  # 替换为你的 API Key
+            api_key=deep_seek_api_key,  # 替换为你的 API Key
         )
         self.MEMORY_KEY = "chat_history"
         self.emotion = "default"  # 初始化中性情感
@@ -117,14 +119,14 @@ class Master():
             url="redis://localhost:6379/0",
             session_id=session_id,
         )
-        #问题之一：不可以实时总结！！！
-        if len(chat_message_history.messages) > 10: #超过5轮对话
+        # 问题之一：不可以实时总结！！！
+        if len(chat_message_history.messages) > 10:  # 超过5轮对话
             prompt = """我的对话现在超长了，这是我的对话历史{chat_history}，现在需要你帮我总结一下。需要保留关键的用户信息。AI角色信息不需要保留。
             样例：摘要总结|关键用户信息
             """
-            chain =ChatPromptTemplate.from_template(prompt) | self.chatmodel
-            summary = chain.invoke({"chat_history":chat_message_history.messages})
-            print("summary:",summary)
+            chain = ChatPromptTemplate.from_template(prompt) | self.chatmodel
+            summary = chain.invoke({"chat_history": chat_message_history.messages})
+            print("summary:", summary)
             chat_message_history.clear()
             chat_message_history.add_messages([summary])
         # 开发总结功能

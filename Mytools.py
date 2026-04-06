@@ -8,13 +8,16 @@ from langchain_community.vectorstores import Qdrant  # 向量数据库
 from qdrant_client import QdrantClient  # 引入客户端
 from langchain_core.output_parsers import JsonOutputParser
 import requests #python请求包
+import os
 
+deep_seek_api_key = os.getenv("DEEPSEEK_API_KEY")
+serpapi_api_key = os.getenv("serpapi_api_key")
+yuan_fen_ju_api_key = os.getenv("YUAN_FEN_JU")
 
-cal_api_key = ""
 @tool
 def search(query):
     """只有需要了解实时信息或者不知道的时候才会使用这个搜索工具。"""
-    serp = SerpAPIWrapper(serpapi_api_key="")  # ← 直接传入
+    serp = SerpAPIWrapper(serpapi_api_key=serpapi_api_key)  # ← 直接传入
     res = serp.run(query)
     print("实时搜索结果：", res)
     return res
@@ -40,7 +43,7 @@ def bazi_measurement(query):
     prompt = ChatPromptTemplate.from_template("""
     你是一个参数查询助手，根据用户的输入内容找出相关的参数并按json格式返回，
     json字段如下：
-    "api_key":"",
+    "api_key":{yuan_fen_ju_api_key},
     "name":"姓名",
     "sex":"性别可以根据姓名自动判断 0男 1女",
     "type":"历类型默认1 0农历 1公历",
@@ -59,10 +62,10 @@ def bazi_measurement(query):
             temperature=0,
             streaming=True,
             base_url="https://api.deepseek.com",  # DeepSeek 需要配置
-            api_key="",  # 替换为你的 API Key
+            api_key=deep_seek_api_key,  # 替换为你的 API Key
         )
     chain = prompt | chatmodel | parser
-    data = chain.invoke({"query":query})
+    data = chain.invoke({"yuan_fen_ju_api_key":yuan_fen_ju_api_key,"query":query})
     # print("bazi_paipan 查询结果:",data) #这个应该是从prompt->JSON的一条链路，Json为后续像测算官网请求做准备
     res = requests.post(url,data=data)
     if res.status_code == 200:
@@ -93,12 +96,12 @@ def dreaming(query:str):
         temperature=0,
         streaming=True,
         base_url="https://api.deepseek.com",  # DeepSeek 需要配置
-        api_key="",  # 替换为你的 API Key
+        api_key=deep_seek_api_key,  # 替换为你的 API Key
     )
     chain = ChatPromptTemplate.from_template(prompt) | chatmodel | StrOutputParser()
     data = chain.invoke({"keywords":query})
     print("data:",data)
-    res = requests.post(url, data={"api_key":cal_api_key,"title_zhougong":data})
+    res = requests.post(url, data={"api_key":yuan_fen_ju_api_key,"title_zhougong":data})
     if res.status_code == 200:
         print("res:",res)
         print("JSON:",res.json())
