@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings  # 向量模型
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -25,11 +26,15 @@ def search(query):
 
 @tool
 def get_info_from_local_db(query):
-    """只有回答有关2026年运势或者马年运势相关的问题时候，才会使用这个工具。"""
+    """只有回答有关客厅风水装修知识相关的问题时候，才会使用这个工具。"""
     client = Qdrant(
-        QdrantClient(path="/langchain风水大师项目/local——qdrant"),
-        "local_documents",  # 集合
-        OpenAIEmbeddings(),
+        QdrantClient(path="./local_qdrant"),
+        collection_name = "客厅风水装修知识大全",  # 集合名称
+        embeddings=HuggingFaceEmbeddings(  #这里的embeddings是复数
+            model_name=r"C:\Users\86188\.cache\huggingface\hub\BAAI\bge-large-zh-v1___5",  # 使用本地缓存
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True}
+        ), #embedding模型,
     )
     retriever = client.as_retriever(search_type="mmr")
     result = retriever.get_relevant_documents(query)

@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings  # 向量模型
@@ -9,11 +11,16 @@ from qdrant_client import QdrantClient  # 引入客户端
 from Mytools import *
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import RedisChatMessageHistory
+from langchain_community.document_loaders.web_base import WebBaseLoader #网页文档加载器 网页内容变成->langchain的document对象格式
+from langchain.text_splitter import RecursiveCharacterTextSplitter #文本切分器
+from langchain_community.embeddings import HuggingFaceEmbeddings #退而求其次-本地轻量化模型
 import os
+
+
 
 app = FastAPI()
 deep_seek_api_key = os.getenv("DEEPSEEK_API_KEY")
-
+executor = ThreadPoolExecutor(max_workers=2) # 创建线程池
 
 class Master():
     def __init__(self):
@@ -119,18 +126,25 @@ class Master():
             url="redis://localhost:6379/0",
             session_id=session_id,
         )
-        # 问题之一：不可以实时总结！！！
-        if len(chat_message_history.messages) > 10:  # 超过5轮对话
-            prompt = """我的对话现在超长了，这是我的对话历史{chat_history}，现在需要你帮我总结一下。需要保留关键的用户信息。AI角色信息不需要保留。
-            样例：摘要总结|关键用户信息
-            """
-            chain = ChatPromptTemplate.from_template(prompt) | self.chatmodel
-            summary = chain.invoke({"chat_history": chat_message_history.messages})
-            print("summary:", summary)
-            chat_message_history.clear()
-            chat_message_history.add_messages([summary])
         # 开发总结功能
         return chat_message_history
+
+    def summarize_memory_sync(self):
+        """同步总结方法（在线程中执行）"""
+        try:
+            # 问题之一：不可以实时总结！！！
+            if len(self.memory.messages) > 10:  # 超过5轮对话
+                prompt = """我的对话现在超长了，这是我的对话历史{chat_history}，现在需要你帮我总结一下。需要保留关键的用户信息。AI角色信息不需要保留。
+                        样例：摘要总结|关键用户信息
+                        """
+                chain = ChatPromptTemplate.from_template(prompt) | self.chatmodel
+                summary = chain.invoke({"chat_history": self.memory.messages})
+                print("summary:", summary)
+                self.memory.clear()
+                self.memory.add_messages([summary])
+        except Exception as e:
+            print(f"总结失败: {e}")
+
 
     def run(self, query):
         agent_executor = self._create_agent_executor(self.emotion)
@@ -176,12 +190,33 @@ def read_root():
 @app.post("/chat")
 def chat(query: str):
     master.catch_emotion_chain(query)  # 情绪分类
-    return master.run(query)  # 打包用户提示词
+    res = master.run(query)
+    executor.submit(master.summarize_memory_sync)
+    return  res# 打包用户提示词
 
 
 # URL
 @app.post("/add_urls")
-def add_urls():
+def add_urls(url:str):
+    loader = WebBaseLoader(url)
+    document = loader.load()
+    splited_doucment = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=50,
+    ).split_documents(document)
+    #存入向量数据库 Qdrant
+    qdrant =  Qdrant.from_documents(
+        splited_doucment,  #切分好的文本
+        embedding=HuggingFaceEmbeddings(
+            model_name=r"C:\Users\86188\.cache\huggingface\hub\BAAI\bge-large-zh-v1___5",  # 使用本地缓存
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True}
+        ),
+        path = "./local_qdrant",
+        collection_name = "客厅风水装修知识大全" #主要学习运势
+    )
+    print("向量数据库构建完成！")
+
     return {"response": "URL added!"}
 
 
