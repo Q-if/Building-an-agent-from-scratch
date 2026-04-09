@@ -24,10 +24,11 @@ import uuid
 app = FastAPI()
 deep_seek_api_key = os.getenv("DEEPSEEK_API_KEY")
 Microsoft_TTS_API_KEY = os.getenv("MICROSOFT_TTS_KEY")
-executor = ThreadPoolExecutor(max_workers=2) # 创建线程池
+executor = ThreadPoolExecutor(max_workers=3) # 创建线程池
 
 class Master():
-    def __init__(self):
+    def __init__(self,session_id):
+        self.session_id = session_id
         self.chatmodel = ChatOpenAI(
             model="deepseek-chat",
             temperature=0,
@@ -124,11 +125,11 @@ class Master():
         return AgentExecutor(agent=agent, verbose=True, tools=self.tools, memory=memory)  # verbose是
         # 打开Invoking:/responded:调试显示 的开关
 
-    def get_memory(self, session_id="qiuyifu_redis"):
+    def get_memory(self):
         """获取持久化记忆"""
         chat_message_history = RedisChatMessageHistory(
             url="redis://localhost:6379/0",
-            session_id=session_id,
+            session_id=self.session_id,
         )
         # 开发总结功能
         return chat_message_history
@@ -138,9 +139,25 @@ class Master():
         try:
             # 问题之一：不可以实时总结！！！
             if len(self.memory.messages) > 10:  # 超过5轮对话
-                prompt = """我的对话现在超长了，这是我的对话历史{chat_history}，现在需要你帮我总结一下。需要保留关键的用户信息。AI角色信息不需要保留。
-                        样例：摘要总结|关键用户信息
-                        """
+                prompt = """请总结以下对话历史。总结的目的是让未来的对话能够快速理解“已经聊过什么、已经得到什么结果”，避免重复询问或重复执行相同的操作。
+                【总结要求】
+                1. 保留关键的用户信息（如姓名、出生年月、偏好等）
+                2. 保留用户提出的重要问题或请求
+                3. **重点保留：陈大师已经给出的回答、计算结果、查询结果**
+                4. 如果用户要求过算命、查询、测算等操作，需要记录“已完成”及结果
+                5. 不需要保留无意义的客套话、重复内容
+                【输出格式】
+                请按以下格式输出：
+                ===已获取的用户信息===
+                [姓名、出生时间等关键信息]
+                ===已完成的查询/测算===
+                [每次操作：用户要求 → 陈大师给出的结果]
+                例如：
+                - 八字测算：用户陈乐心，1998年7月28日上午9:50生 → 八字为戊寅年己未月丙子日癸巳时，五行火旺，喜用神为水
+                - 比特币价格查询：当前价格为XXXX美元
+                【对话历史】
+                {chat_history}
+                请开始总结："""
                 chain = ChatPromptTemplate.from_template(prompt) | self.chatmodel
                 summary = chain.invoke({"chat_history": self.memory.messages})
                 print("summary:", summary)
@@ -180,39 +197,69 @@ class Master():
         self.emotion = result
         return result
 
-    def background_voice_synthesis(self,text:str,uuid:str):
-        """这个函数只是触发了语音合成"""
-        asyncio.run(self.get_voice(text,uuid))
+    # 1. 修改 background_voice_synthesis 为同步版本
+    def background_voice_synthesis_sync(self, text: str, uuid: str):
+        """同步版本的语音合成（在线程池中运行）"""
+        try:
+            # 创建新的事件循环（因为 requests 是同步的，这里不需要 asyncio）
+            # 直接调用同步代码
+            self.get_voice_sync(text, uuid)
+        except Exception as e:
+            print(f"语音合成失败: {e}")
 
-    async def get_voice(self,text:str,uuid:str):
-        #text:agent生成的文本,uuid:唯一的文件名
-        print("text_to_speach:",text)
-        print("uuid:",uuid)
-        #使用微软tts代码，使用API的方式
-        print("current_users_emotion:",self.emotion)
-        request_header = {"Ocp-Apim-Subscription-Key":Microsoft_TTS_API_KEY,
-                          "Content-Type":"application/ssml+xml",
-                          "X-Microsoft-OutputFormat":"audio-16khz-32kbitrate-mono-mp3", #输出格式mp3
-                          "User-Agent":"Master Chen",
-                          }
+    def get_voice_sync(self, text: str, uuid: str):
+        """同步版本的 TTS"""
+        print("text_to_speach:", text)
+        print("uuid:", uuid)
+
+        request_header = {
+            "Ocp-Apim-Subscription-Key": Microsoft_TTS_API_KEY,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "audio-16khz-32kbitrate-mono-mp3",
+            "User-Agent": "Master Chen",
+        }
+
+        # 提取文本内容
+        if isinstance(text, dict):
+            actual_text = text.get('output', str(text))
+        else:
+            actual_text = str(text)
+
         request_body = f"""<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' 
-        xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='zh-CH'>
-        <voice xml:lang='zh-CN' name='zh-CN-YunzeNeural'>
-            <mstts:express-as style='{self.MOODS[self.emotion]["voice_style"]}' role='OlderAdultMale'>
-                {text}
-            </mstts:express-as>
-        </voice></speak>
-        """
-        response = requests.post("https://eastasia.tts.speech.microsoft.com/cognitiveservices/v1",headers=request_header,
-                                 data=request_body.encode("utf-8")) #中文编码一下
-        print("response:",response)
+        xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='zh-CN'>
+            <voice name='zh-CN-YunzeNeural'>
+                <mstts:express-as style='{self.MOODS[self.emotion]["voice_style"]}' role='OlderAdultMale'>
+                    {actual_text}
+                </mstts:express-as>
+            </voice>
+        </speak>"""
+
+        response = requests.post(
+            "https://eastasia.tts.speech.microsoft.com/cognitiveservices/v1",
+            headers=request_header,
+            data=request_body.encode("utf-8"),
+            proxies={"http": None, "https": None},  # 关键：禁用代理
+            timeout=30
+        )
+
+
         if response.status_code == 200:
-            with open(f"{uuid}.mp3","wb") as f:
+            with open(f"{uuid}.mp3", "wb") as f:
                 f.write(response.content)
+            print(f"音频保存成功: {uuid}.mp3")
+        else:
+            print(f"TTS失败: {response.status_code}")
 
 
-master = Master()  # 初始化实例
+master_instances = {}
 
+def get_master(chat_id: str):
+    """根据chat_id获取或创建独立的master实例"""
+    if chat_id not in master_instances:
+        # 每个用户独立的session_id
+        session_id = f"telegram_{chat_id}"
+        master_instances[chat_id] = Master(session_id=session_id)
+    return master_instances[chat_id]
 
 # 根目录接口
 @app.get("/")
@@ -222,13 +269,14 @@ def read_root():
 
 # chat
 @app.post("/chat")
-def chat(query: str,backgroundtask:BackgroundTasks):
+def chat(query: str,chat_id):
+    master = get_master(chat_id)
     master.catch_emotion_chain(query)  # 情绪分类
     res = master.run(query)
     id = str(uuid.uuid4()) #语音地址id
-    backgroundtask.add_task(master.background_voice_synthesis,res["output"],id) #生成唯一的标识符
+    executor.submit(master.background_voice_synthesis_sync, res["output"], id)
     executor.submit(master.summarize_memory_sync)
-    return  res,id  # 打包用户提示词
+    return {"res":res,"id":id}  # 打包用户提示词
 
 
 # URL
